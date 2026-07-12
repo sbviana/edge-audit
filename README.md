@@ -47,44 +47,50 @@ evaluation:
 ## Install
 
 ```bash
-pip install numpy pandas
-pip install -e .          # from a clone
-pytest                    # 15 tests, each guarding one artifact
-python examples/demo.py   # watch a mined mirage fail and a real edge pass
+git clone https://github.com/sbviana/edge-audit.git
+cd edge-audit
+pip install -e .              # only needs numpy and pandas
+pytest                        # 15 tests, each guarding one artifact
+python examples/demo.py       # a mined mirage fails, a real edge passes
+python examples/quickstart.py # copy-paste-runnable end-to-end template
 ```
 
-## Sixty-second example
+## Use it with your own data
+
+The framework needs exactly three things from you:
+
+1. **Bars**: any `DataFrame`, one row per bar, sorted, with a timestamp
+   column (used only to derive trading sessions — a session is a calendar
+   date) and a `close` column. Intraday or daily both work.
+2. **Events**: integer bar indices where your signal fires, plus a side
+   (+1 long / −1 short) per event. Compute them from `bars[:t+1]`
+   information only — and *prove* that with `causality_violations` on your
+   feature function.
+3. **Honest costs**: your real round-trip cost per trade and point value,
+   at the *worst* defensible anchor.
+
+Then the pipeline is always the same five calls:
 
 ```python
-import numpy as np
-from edge_audit import (build_sessions, nonoverlap_chain, GateSpec,
-                        evaluate_cell, maxt_adjusted_p, arm_excess,
+from edge_audit import (build_sessions, nonoverlap_chain, maxt_adjusted_p,
+                        arm_excess, evaluate_cell, GateSpec,
                         freeze_registration)
 
-# 0. FREEZE the spec before results exist; commit the log for a timestamp.
-freeze_registration(
-    {"hypothesis": "my-signal continuation", "horizon": 15,
-     "cells": ["H=15"], "gates": "default"},
-    "research/registrations.jsonl")
-
-# 1. Sessions and a non-overlapping event chain with hard session walls.
+freeze_registration({...spec...}, "registrations.jsonl")   # BEFORE results
 sess, last = build_sessions(bars["ts"])
-trades = nonoverlap_chain(event_idx, sides, bars["close"], last,
-                          horizon=15, no_entry_final=15)
-tsess = sess[trades["entry_idx"].to_numpy()]
-
-# 2. Multiplicity over EVERYTHING you tried (not just what you liked).
-adj = maxt_adjusted_p({"H=15": (trades["ret"], tsess), ...})
-
-# 3. Drift attribution: does each arm beat random entry on its own side?
-exc = arm_excess(trades["side"], trades["ret"], all_opportunity_rets)
-
-# 4. The verdict — five legs, all must hold, none may be waived.
-spec = GateSpec(n_min=200, t_min=2.5, alpha=0.05, majority_min=0.52,
-                cost_per_trade=12.0, point_value=50.0)
-print(evaluate_cell(trades["ret"], tsess, spec,
-                    adjusted_p=adj["H=15"], arm_excess_result=exc).report())
+trades = nonoverlap_chain(event_idx, sides, bars["close"], last, horizon=15)
+adj = maxt_adjusted_p({...every cell you evaluated...})
+verdict = evaluate_cell(trades["ret"], sess[trades["entry_idx"]],
+                        GateSpec(cost_per_trade=..., point_value=...),
+                        adjusted_p=adj["your-cell"],
+                        arm_excess_result=arm_excess(...))
+print(verdict.report())
 ```
+
+[`examples/quickstart.py`](examples/quickstart.py) is this exact pipeline,
+fully runnable on synthetic data, with comments marking the two blocks you
+replace (your bars, your signal). Every public function has a complete
+docstring — `help(edge_audit.maxt_adjusted_p)` is the API reference.
 
 ## The protocol (the part that matters more than the code)
 
