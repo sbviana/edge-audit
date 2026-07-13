@@ -82,6 +82,13 @@ def maxt_adjusted_p(cells: dict, n_perm: int = 10_000, seed: int = 0):
     Sidak/Bonferroni penalty. There is no free lunch — only removal of
     Bonferroni's worst-case slack.
 
+    Each cell's statistic is STUDENTIZED by its own permutation-null
+    standard deviation before taking the family max. Without this, a
+    battery with heterogeneous cell scales (e.g. one cell with 100k
+    small-variance trades next to one with 20k large-variance trades)
+    lets the noisiest cell's null dominate every other cell's adjusted
+    p — a real bug we hit in production the first day this ran.
+
     Returns {cell: adjusted_p}.
     """
     prepared = {}
@@ -96,13 +103,18 @@ def maxt_adjusted_p(cells: dict, n_perm: int = 10_000, seed: int = 0):
 
     rng = np.random.default_rng(seed)
     flips = rng.choice([-1.0, 1.0], size=(n_perm, len(order)))
-    max_stat = np.zeros(n_perm)
-    for name, (sess, sums, n, _real) in prepared.items():
+    max_z = np.zeros(n_perm)
+    real_z = {}
+    for name, (sess, sums, n, real) in prepared.items():
         cols = np.array([order[s] for s in sess])
         null = np.abs(flips[:, cols] @ sums) / n
-        np.maximum(max_stat, null, out=max_stat)
-    return {name: float((max_stat >= real).mean())
-            for name, (_s, _v, _n, real) in prepared.items()}
+        sd = null.std(ddof=1)
+        if sd == 0:
+            sd = 1.0
+        np.maximum(max_z, null / sd, out=max_z)
+        real_z[name] = real / sd
+    return {name: float((max_z >= z).mean())
+            for name, z in real_z.items()}
 
 
 def drop_k_mean(returns, k: int = 10) -> float:
